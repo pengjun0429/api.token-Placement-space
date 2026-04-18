@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vault Pro | 智能金鑰守門員</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <style>
+        :root { --primary: #38bdf8; --success: #10b981; --error: #fb7185; --bg: #020617; --card: rgba(15, 23, 42, 0.7); }
+        body { background: radial-gradient(circle at top right, #1e1b4b, #020617); color: #f1f5f9; font-family: system-ui, -apple-system, sans-serif; min-height: 100vh; margin: 0; display: flex; justify-content: center; align-items: center; }
+        
+        .glass-panel { background: var(--card); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 28px; padding: 35px; width: 90%; max-width: 500px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8); transition: 0.3s; }
+        #mainApp, #initWall { display: none; }
+
+        h1 { font-size: 1.8rem; margin: 0 0 0.5rem 0; text-align: center; }
+        .subtitle { text-align: center; color: #94a3b8; font-size: 0.85rem; margin-bottom: 2rem; }
+        .input-box { width: 100%; background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 14px; padding: 12px 16px; color: white; margin-bottom: 12px; box-sizing: border-box; font-size: 1rem; }
+        .input-box:focus { border-color: var(--primary); outline: none; }
+        
+        .btn { width: 100%; background: var(--primary); color: #020617; border: none; border-radius: 14px; padding: 14px; font-weight: 700; cursor: pointer; transition: 0.2s; }
+        .btn:hover { transform: translateY(-2px); filter: brightness(1.1); }
+        .btn-del { background: var(--error); color: white; margin-left: 8px; }
+        .btn-sec { background: rgba(255, 255, 255, 0.05); color: white; margin-top: 20px; }
+
+        .list-area { margin-top: 15px; max-height: 300px; overflow-y: auto; }
+        .key-item { background: rgba(255, 255, 255, 0.03); border-radius: 16px; padding: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; border: 1px solid rgba(255,255,255,0.05); }
+        .key-type { font-size: 10px; padding: 3px 8px; border-radius: 8px; background: rgba(56, 189, 248, 0.1); color: var(--primary); font-weight: bold; }
+
+        /* 彈窗 */
+        #modalOverlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(12px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: 0.3s; }
+        .modal-box { background: rgba(30, 41, 59, 0.9); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 24px; padding: 30px; text-align: center; max-width: 320px; width: 80%; transform: scale(0.8); transition: 0.3s; }
+        #modalOverlay.active { opacity: 1; display: flex; }
+        #modalOverlay.active .modal-box { transform: scale(1); }
+    </style>
+</head>
+<body>
+
+<div id="loginWall" class="glass-panel">
+    <h1>Vault Pro 🔐</h1>
+    <p class="subtitle">解鎖您的加密保險箱</p>
+    <input type="password" id="masterPass" class="input-box" placeholder="輸入主密碼">
+    <button class="btn" onclick="authVault()">進入</button>
+</div>
+
+<div id="initWall" class="glass-panel">
+    <h1>初始化 🛡️</h1>
+    <p class="subtitle">設定主密碼（請務必牢記）</p>
+    <input type="password" id="newPass" class="input-box" placeholder="新主密碼">
+    <button class="btn" onclick="setupVault()">確認設定</button>
+</div>
+
+<div id="mainApp" class="glass-panel" style="max-width: 600px;">
+    <h1>金鑰管理</h1>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <select id="keyType" class="input-box"><option value="API_KEY">API Key</option><option value="TOKEN">Token</option></select>
+        <input type="text" id="keyName" class="input-box" placeholder="名稱">
+    </div>
+    <input type="text" id="keyContent" class="input-box" placeholder="內容">
+    <button class="btn" onclick="handleSave()">儲存並加密</button>
+    <input type="text" id="search" class="input-box" style="margin-top: 20px;" placeholder="🔍 搜尋..." oninput="renderList()">
+    <div class="list-area" id="vaultList"></div>
+    <button class="btn btn-sec" onclick="location.reload()">鎖定並登出</button>
+</div>
+
+<div id="modalOverlay"><div class="modal-box"><div id="mIcon" style="font-size: 3rem;"></div><h2 id="mTitle"></h2><p id="mDesc"></p><button class="btn" onclick="closeM()">確定</button></div></div>
+
+<script>
+    const GAS_URL = 'https://script.google.com/macros/s/AKfycbzVJyFRlHXo0Kmu7PRlLcWR5S0iC-i97Di_2FtM7nN-g6awgjm188uFFCu03B7YXQAV/exec'; 
+    let vaultData = [];
+    let master = "";
+
+    function notify(type, title, desc, autoClose = false) {
+        const overlay = document.getElementById('modalOverlay');
+        document.getElementById('mIcon').innerText = type === 'success' ? '✨' : '⚠️';
+        document.getElementById('mTitle').innerText = title;
+        document.getElementById('mDesc').innerText = desc;
+        overlay.style.display = 'flex';
+        setTimeout(() => overlay.classList.add('active'), 10);
+        if (autoClose) setTimeout(closeM, 2000);
+    }
+    function closeM() { 
+        document.getElementById('modalOverlay').classList.remove('active');
+        setTimeout(() => document.getElementById('modalOverlay').style.display = 'none', 300);
+    }
+
+    const crypt = {
+        enc: (t, p) => CryptoJS.AES.encrypt(t, p).toString(),
+        dec: (c, p) => { try { return CryptoJS.AES.decrypt(c, p).toString(CryptoJS.enc.Utf8); } catch { return ""; } }
+    };
+
+    async function authVault() {
+        const pass = document.getElementById('masterPass').value;
+        const res = await fetch(GAS_URL, { method: 'POST', body: JSON.stringify({ action: 'load' }) });
+        vaultData = await res.json();
+        const verify = vaultData.find(i => i.name === 'VERIFY_MARK');
+        if (!verify) {
+            document.getElementById('loginWall').style.display = 'none';
+            document.getElementById('initWall').style.display = 'block';
+        } else if (crypt.dec(verify.content, pass) === "OK") {
+            master = pass;
+            document.getElementById('loginWall').style.display = 'none';
+            document.getElementById('mainApp').style.display = 'block';
+            renderList();
+        } else { notify('error', '拒絕存取', '密碼不正確'); }
+    }
+
+    async function setupVault() {
+        const pass = document.getElementById('newPass').value;
+        await fetch(GAS_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify({ action: 'save', type: 'SYS', name: 'VERIFY_MARK', content: crypt.enc("OK", pass) }) });
+        notify('success', '成功', '已初始化，請重新登入', true);
+        setTimeout(() => location.reload(), 2000);
+    }
+
+    async function handleSave() {
+        const n = document.getElementById('keyName').value, c = document.getElementById('keyContent').value, t = document.getElementById('keyType').value;
+        await fetch(GAS_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify({ action: 'save', type: t, name: n, content: crypt.enc(c, master) }) });
+        notify('success', '已儲存', '加密資料已同步', true);
+        setTimeout(async () => {
+            const res = await fetch(GAS_URL, { method: 'POST', body: JSON.stringify({ action: 'load' }) });
+            vaultData = await res.json(); renderList();
+        }, 1500);
+    }
+
+    async function delItem(id) {
+        if (!confirm("確定刪除？")) return;
+        await fetch(GAS_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify({ action: 'delete', id: id }) });
+        notify('success', '已刪除', '資料已移除', true);
+        setTimeout(async () => {
+            const res = await fetch(GAS_URL, { method: 'POST', body: JSON.stringify({ action: 'load' }) });
+            vaultData = await res.json(); renderList();
+        }, 1000);
+    }
+
+    function renderList() {
+        const q = document.getElementById('search').value.toLowerCase();
+        const listDiv = document.getElementById('vaultList'); listDiv.innerHTML = '';
+        vaultData.filter(i => i.type !== 'SYS' && i.name.toLowerCase().includes(q)).forEach(item => {
+            const raw = crypt.dec(item.content, master);
+            const div = document.createElement('div'); div.className = 'key-item';
+            div.innerHTML = `<div><span class="key-type">${item.type}</span><div style="font-weight:600;">${item.name}</div></div>
+                <div><button class="btn" onclick="navigator.clipboard.writeText('${raw}');notify('success','已複製','已存入剪貼簿',true)" style="width:auto;padding:8px 12px;margin:0;">複製</button>
+                <button class="btn btn-del" onclick="delItem('${item.id}')" style="width:auto;padding:8px 12px;margin:0;">刪除</button></div>`;
+            listDiv.appendChild(div);
+        });
+    }
+</script>
+</body>
+</html>
